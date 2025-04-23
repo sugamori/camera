@@ -2,7 +2,7 @@
 <html lang="ja" ng-app="cameraApp">
 <head>
   <meta charset="UTF-8">
-  <title>Safari対応 自動シャッター付きカメラ</title>
+  <title>iPhone対応 自動シャッター付きカメラ</title>
   <script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.8.3/angular.min.js"></script>
   <script src="https://docs.opencv.org/4.5.2/opencv.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -35,6 +35,17 @@
       height: 60%;
       pointer-events: none;
     }
+    #guideText {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: white;
+      font-size: 16px;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 4px 8px;
+      border-radius: 8px;
+    }
     #canvas, #previewImage {
       display: none;
     }
@@ -61,8 +72,12 @@
   <div id="videoWrapper">
     <video id="video" autoplay playsinline muted></video>
     <div id="guideFrame"></div>
+    <div id="guideText">📸 撮影対象を赤枠に収めてください（明るく・ピントを合わせて）</div>
     <div class="ui-controls" ng-show="opencvReady">
-      <select ng-model="selectedCameraId" ng-options="device.deviceId as device.label for device in cameras" ng-change="switchCamera()"></select>
+      <select ng-model="selectedCamera" ng-change="switchCamera()">
+        <option value="user">インカメラ</option>
+        <option value="environment">アウトカメラ</option>
+      </select>
       <button ng-click="startAutoCapture()">自動シャッター開始</button>
     </div>
   </div>
@@ -85,36 +100,23 @@
           height: 240 * 0.6
         };
         $scope.opencvReady = false;
-        $scope.cameras = [];
-        $scope.selectedCameraId = null;
+        $scope.selectedCamera = "environment";
         $scope.previewUrl = null;
         let autoTimer = null;
         let currentStream = null;
         cv['onRuntimeInitialized'] = function () {
           $scope.opencvReady = true;
-          $timeout(initApp);
-        };
-        function initApp() {
-          if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-            $scope.result = "❌ このブラウザではカメラが使用できません（HTTPS環境が必要です）";
-            $scope.$apply();
-            return;
-          }
-          navigator.mediaDevices.enumerateDevices().then(devices => {
-            $scope.cameras = devices.filter(d => d.kind === 'videoinput');
-            $scope.selectedCameraId = $scope.cameras[0]?.deviceId || null;
-            $timeout(() => {
-              $scope.switchCamera();
-            });
+          $timeout(() => {
+            $scope.switchCamera();
           });
-        }
+        };
         $scope.switchCamera = function () {
           if (currentStream) {
             currentStream.getTracks().forEach(track => track.stop());
           }
           const constraints = {
             video: {
-              deviceId: $scope.selectedCameraId ? { exact: $scope.selectedCameraId } : undefined
+              facingMode: $scope.selectedCamera
             }
           };
           navigator.mediaDevices.getUserMedia(constraints).then(stream => {
@@ -124,12 +126,12 @@
             $scope.previewUrl = null;
             $timeout();
           }).catch(err => {
-            $scope.result = "❌ カメラ切替エラー：" + err;
+            $scope.result = "❌ カメラ起動エラー：" + err;
             $timeout();
           });
         };
         $scope.startAutoCapture = function () {
-          $scope.result = "🔍 品質チェック中...";
+          $scope.result = "🔍 撮影条件をチェック中...";
           $scope.previewUrl = null;
           autoTimer = setInterval(checkLoop, 1000);
         };
@@ -141,6 +143,7 @@
           const blurScore = calcBlurScore(src);
           const isInGuide = checkInGuide(src);
           src.delete();
+          console.log("Check: 明るさ", brightness, " ブレ", blurScore, " 枠内", isInGuide);
           if (brightness > 50 && blurScore > 100 && isInGuide) {
             clearInterval(autoTimer);
             $scope.result = "✅ 条件OK！撮影します...";
@@ -158,7 +161,7 @@
         };
         $scope.sendImage = function () {
           console.log("送信データ（Base64）:", $scope.previewUrl);
-          $scope.result = "📤 送信完了！（ここにPOST処理を追加できます）";
+          $scope.result = "📤 送信完了！（ここにサーバー連携を追加可能）";
         };
         function calcBrightness(imageData) {
           const data = imageData.data;
