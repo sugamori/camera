@@ -2,9 +2,9 @@
 <html lang="ja" ng-app="cameraApp">
 <head>
   <meta charset="UTF-8">
-  <title>Safari対応カメラ全画面＋自動撮影</title>
+  <title>Safari対応 自動シャッター付きカメラ</title>
   <script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.8.3/angular.min.js"></script>
-  <script async src="https://docs.opencv.org/4.5.2/opencv.js"></script>
+  <script src="https://docs.opencv.org/4.5.2/opencv.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <style>
     html, body {
@@ -14,21 +14,18 @@
       overflow: hidden;
       background: black;
     }
-
     #videoWrapper {
       position: relative;
       width: 100vw;
-      height: 100dvh; /* Safari向け全画面 */
+      height: 100dvh;
       overflow: hidden;
     }
-
     #video {
       width: 100vw;
       height: 100dvh;
       object-fit: cover;
-      transform: scaleX(-1); /* インカメラ時にミラー表示 */
+      transform: scaleX(-1);
     }
-
     #guideFrame {
       position: absolute;
       border: 2px dashed red;
@@ -37,21 +34,16 @@
       width: 60%;
       height: 60%;
       pointer-events: none;
-      box-sizing: border-box;
     }
-
     #canvas, #previewImage {
       display: none;
     }
-
     #previewImage {
       margin-top: 10px;
       border: 1px solid #ccc;
       width: 100vw;
       max-width: 400px;
-      height: auto;
     }
-
     .ui-controls {
       position: absolute;
       bottom: 10px;
@@ -59,7 +51,6 @@
       color: white;
       z-index: 10;
     }
-
     .ui-controls button, select {
       font-size: 16px;
       margin-right: 10px;
@@ -67,26 +58,23 @@
   </style>
 </head>
 <body ng-controller="CameraController">
-
   <div id="videoWrapper">
     <video id="video" autoplay playsinline muted></video>
     <div id="guideFrame"></div>
-    <div class="ui-controls">
+    <div class="ui-controls" ng-show="opencvReady">
       <select ng-model="selectedCameraId" ng-options="device.deviceId as device.label for device in cameras" ng-change="switchCamera()"></select>
       <button ng-click="startAutoCapture()">自動シャッター開始</button>
     </div>
   </div>
-
   <canvas id="canvas" width="320" height="240"></canvas>
   <img id="previewImage" ng-show="previewUrl" ng-src="{{previewUrl}}">
   <br>
   <button ng-show="previewUrl" ng-click="sendImage()">この画像で送信する</button>
-
-  <p ng-bind="result" style="color:white; padding: 10px; background:#000;"></p>
-
+  <p ng-if="!opencvReady" style="color:yellow; padding:10px;">🌀 OpenCVの初期化中です...</p>
+  <p ng-if="opencvReady" ng-bind="result" style="color:white; padding:10px;"></p>
   <script>
     angular.module('cameraApp', [])
-      .controller('CameraController', ['$scope', function ($scope) {
+      .controller('CameraController', ['$scope', '$timeout', function ($scope, $timeout) {
         const video = document.getElementById('video');
         const canvas = document.getElementById('canvas');
         const context = canvas.getContext('2d');
@@ -96,29 +84,37 @@
           width: 320 * 0.6,
           height: 240 * 0.6
         };
-
+        $scope.opencvReady = false;
         $scope.cameras = [];
         $scope.selectedCameraId = null;
         $scope.previewUrl = null;
         let autoTimer = null;
         let currentStream = null;
-
-        // カメラ一覧取得
-        navigator.mediaDevices.enumerateDevices().then(devices => {
-          $scope.cameras = devices.filter(d => d.kind === 'videoinput');
-          $scope.selectedCameraId = $scope.cameras[0]?.deviceId || null;
-          $scope.$apply();
-          $scope.switchCamera();
-        });
-
+        cv['onRuntimeInitialized'] = function () {
+          $scope.opencvReady = true;
+          $timeout(initApp);
+        };
+        function initApp() {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+            $scope.result = "❌ このブラウザではカメラが使用できません（HTTPS環境が必要です）";
+            $scope.$apply();
+            return;
+          }
+          navigator.mediaDevices.enumerateDevices().then(devices => {
+            $scope.cameras = devices.filter(d => d.kind === 'videoinput');
+            $scope.selectedCameraId = $scope.cameras[0]?.deviceId || null;
+            $timeout(() => {
+              $scope.switchCamera();
+            });
+          });
+        }
         $scope.switchCamera = function () {
           if (currentStream) {
             currentStream.getTracks().forEach(track => track.stop());
           }
           const constraints = {
             video: {
-              deviceId: $scope.selectedCameraId ? { exact: $scope.selectedCameraId } : undefined,
-              facingMode: 'environment'
+              deviceId: $scope.selectedCameraId ? { exact: $scope.selectedCameraId } : undefined
             }
           };
           navigator.mediaDevices.getUserMedia(constraints).then(stream => {
@@ -126,52 +122,44 @@
             currentStream = stream;
             $scope.result = "📷 カメラ準備完了";
             $scope.previewUrl = null;
-            $scope.$apply();
+            $timeout();
           }).catch(err => {
             $scope.result = "❌ カメラ切替エラー：" + err;
-            $scope.$apply();
+            $timeout();
           });
         };
-
         $scope.startAutoCapture = function () {
           $scope.result = "🔍 品質チェック中...";
           $scope.previewUrl = null;
           autoTimer = setInterval(checkLoop, 1000);
         };
-
         function checkLoop() {
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
           const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
           const brightness = calcBrightness(imageData);
-
           const src = cv.matFromImageData(imageData);
           const blurScore = calcBlurScore(src);
           const isInGuide = checkInGuide(src);
           src.delete();
-
           if (brightness > 50 && blurScore > 100 && isInGuide) {
             clearInterval(autoTimer);
             $scope.result = "✅ 条件OK！撮影します...";
-            $scope.$apply();
-            setTimeout(() => {
+            $timeout(() => {
               $scope.capture();
             }, 500);
           }
         }
-
         $scope.capture = function () {
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
           const dataUrl = canvas.toDataURL("image/jpeg");
           $scope.previewUrl = dataUrl;
           $scope.result = "📸 撮影完了！プレビューを確認してください。";
-          $scope.$apply();
+          $timeout();
         };
-
         $scope.sendImage = function () {
           console.log("送信データ（Base64）:", $scope.previewUrl);
-          $scope.result = "📤 送信完了！（ここにサーバー連携を追加可能）";
+          $scope.result = "📤 送信完了！（ここにPOST処理を追加できます）";
         };
-
         function calcBrightness(imageData) {
           const data = imageData.data;
           let total = 0;
@@ -180,7 +168,6 @@
           }
           return total / (imageData.width * imageData.height);
         }
-
         function calcBlurScore(mat) {
           let gray = new cv.Mat();
           cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
@@ -192,7 +179,6 @@
           gray.delete(); lap.delete(); mean.delete(); stddev.delete();
           return score;
         }
-
         function checkInGuide(mat) {
           let gray = new cv.Mat();
           cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
@@ -217,9 +203,7 @@
           gray.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
           return found;
         }
-
       }]);
   </script>
-
 </body>
 </html>
